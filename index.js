@@ -34,6 +34,8 @@ function Geth (opts) {
 					   .slice(0, -1)
 					   .map(line => '0x' + line.split('{')[1].split('}')[0]); 
 	}
+	this.start = this.start;
+	this.init = this.init;
 }
 
 
