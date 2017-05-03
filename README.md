@@ -22,4 +22,9 @@ var Geth = require('geth-js');
 
 var geth = new Geth();
 geth.start();
+
+// do stuff 
+
+geth.stop();
+
 ```
