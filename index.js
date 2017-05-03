@@ -60,8 +60,13 @@ Geth.prototype.init = function (genesis) {
 
 Geth.prototype.start = function () {
 	child =	cp.spawn('geth', 
-			 parseOptions(this.options), {stdio: 'inherit'});
-	child.on('data', (data) =>{
+			 parseOptions(this.options));
+
+	child.stderr.on('data', (data) =>{
+		data = data.toString('utf-8');
+		if (data.match(/enode/)) {
+			this.enode = 'enode' + data.split('enode')[1].replace('\n', '');
+		}
 		this.state = 'running';
 	});
 	child.on('exit', (code) => {
@@ -74,7 +79,6 @@ Geth.prototype.start = function () {
 	this.stop = () => {
 		 return (child.kill('SIGHUP', {stdio: 'inherit'}))
 	}
-	return true;
 }
 
 
