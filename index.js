@@ -14,6 +14,7 @@ var cp       	= require('child_process');
 var Web3 		= require('web3');
 const defaults  = require('./config/options');
 const Genesis   = require('./config/genesis');
+
 /** 
  * Creates a wrapper instance around a geth process 
  * @constructor
@@ -61,6 +62,9 @@ function Geth (options) {
 
 }
 
+/**
+  * Creates a new geth instance with the supplied options.
+  */
 Geth.new = function (options) {
 	var geth = typeof options === 'undefined' ? 
 				new Geth() : new Geth(options); 
@@ -69,33 +73,56 @@ Geth.new = function (options) {
 
 
 
-
+/**
+  *  Starts a child geth process. If RPC or IPC API's are
+  *  exposed, the instance's `rpc` and `ipc` properties 
+  *  provide access to the corresponding Web3 objects.
+  *
+  */
 Geth.prototype.start = function () {
-	child =	cp.spawn('geth', 
-			 parseOpts(this.options));
+
+	// prepare command-line arguments
+	var spawnargs = parseOpts(this.options);
 
 
-	child.stderr.on('data', (data) =>{
-		data = data.toString('utf-8');
+	// spawn the child process
+	var child =	cp.spawn('geth', spawnargs);
+
+	// inspect the logs
+	child.stderr.on('data', function (data) {
+		// extract the enode id
 		if (data.match(/enode/)) {
-			this.options.enode = 'enode' + data.split('enode')[1].replace('\n', '');
+			this.options.enode = 'enode' + data.split('enode')[1]
+							   				   .replace('\n', '');
+		} 
+		// set the rpc provider if an HTTP endpoint is found
+		else if (data.match(/HTTP/)) {
+			var host = `http://${this.options.rpcaddr}:${this.options.rpcport}`;
+			var rpcProvider = new Web3.providers.HttpProvider(host);
+			this.rpc.setProvider(rpcProvider);
 		}
-		if (data.match (/HTTP/)) {
-			this.rpc.setProvider(new Web3.providers.HttpProvider('http' + data.split('http')[1].replace('\n', '')));
+		// set the ipc provider if an IPC endpoint is found
+		else if (data.match(/IPC/)) {
+			var host = this.options.ipcpath;
+			var socket = new net.Socket();
+			var ipcProvider = new Web3.providers.IpcProvider(host, socket);
+			this.ipc.setProvider(ipcProvider);
 		}
-		if (data.match(/IPC/)) {
-			this.ipc.setProvider(new Web3.providers.IpcProvider(this.options.ipcpath, new net.Socket()));
-			extend(this);	
-		}
+
+		// write the data to the log file
 		fs.appendFileSync(path.join(this.options.datadir,'geth.log'), data);
+
 		this.state = 'running';
 	});
 
+	/** Executed when the underlying geth process is terminated */
 	child.on('exit', (code) => {
 		delete this.options.enode;
 		delete this.stop;
 		this.state = 'terminated';
 	});
+
+	/** Executed when the underlying geth process throws and error */
 	child.on('err', (err) => {
 		console.log(`error: ${err}`);
 	});
@@ -223,24 +250,6 @@ function listNodes () {
 		
 	})
 }
-
-function start(spawnargs) {
-	var child = cp.spawn('geth', spawnargs);
-	child.on('data', (data) => {
-		delete this.stop;
-	});
-}
-
-function stop(pid) {
-	ps.kill(pid, function (err, result) {
-		if (!err) {
-			console.log(result);
-		} else {
-			console.log("error stopping process", pid);
-		}
-	});
-}
-
 
 function extend(geth) {
 	geth.ipc._extend({
