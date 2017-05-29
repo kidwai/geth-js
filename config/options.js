@@ -211,7 +211,7 @@ module.exports = {
 	  },
 	  etherbase: {
 	    description: 'Public address for block mining rewards (default = first account created) (default: "0")',
-	    value: "0"
+	    value: null
 	  },
 	  targetgaslimit: {
 	    description:     'Target gas limit sets the artificial target gas floor for the blocks to mine (default: 4712388)',

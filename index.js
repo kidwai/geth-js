@@ -1,37 +1,17 @@
-/**
-  * geth-js
-  * 
-  * @author Mohammad Kidwai
-  * @license MIT 
-  *
-  */
 module.exports = Geth;
 
 var fs			= require('fs');
 var path 	   	= require('path');
 var ps 			= require('ps-node');
 var cp       	= require('child_process');
+var net 		= require('net');
 var Web3 		= require('web3');
+
 const defaults  = require('./config/options');
 const Genesis   = require('./config/genesis');
 
-/** 
- * Creates a wrapper instance around a geth process 
- * @constructor
- *
- * @param {object} 		options  			- 	Options corresponding to the command-line flags for geth
- * @param {object} 		options.ethereum 	- 	Ethereum options
- * @param {object} 		options.ethash 		- 	Ethash options
- * @param {object} 		options.performance - 	Performance turning options
- * @param {object}  	options.account 	- 	Account options
- * @param {object}     	options.api 		- 	API options
- * @param {object}		options.networking 	- 	Networking options
- * @param {object}		options.miner  		- 	Miner options
- * @param {object} 		options.gasprice 	- 	Gas price oracle options
- * @param {object} 		options.vm 			- 	Virtual machine options
- * @param {object} 		options.debug 		- 	Logging and debugging options
- *
- */
+
+
 function Geth (options) {
 	this.options = options || {};
 	for (var type in defaults) {
@@ -39,103 +19,270 @@ function Geth (options) {
 			this.options[option] = this.options[option] || defaults[type][option].value;	
 	}
 
-	this.start = this.start;
-	this.stop = this.stop;
-	this.init = this.init;
-	this.account = {
-		new: (pass) => {
-			fs.writeFileSync('/tmp/pass', pass);
-			var result = cp.execSync(`geth --datadir ${this.options.datadir} --password /tmp/pass account new`).toString('utf-8');
-			return '0x' + result.split('{')[1].split('}')[0];
-			fs.unlinkSync('/tmp/pass');	
-		},
-		list: () => {
-			return cp.execSync(`geth --datadir ${this.options.datadir} account list`)
-						   .toString('utf-8')
-						   .split('\n')
-						   .slice(0, -1)
-						   .filter((line) => {return line.startsWith("Account #")})
-						   .map(line => '0x' + line.split('{')[1].split('}')[0]); 
-			
-		}
+	this.start = function () {
+			var spawnargs = parseOpts(this.options);
+			var out = fs.openSync(this.options.datadir + '/geth.log', 'a');
+
+			var child = cp.spawn('geth', spawnargs, {
+	  			detached: true,
+	  			stdio: [ 'inherit', out, out ]
+			});
+			this.pid = child.pid;
+
+
+			if (this.options.rpc) {
+				this.rpc.setProvider(new Web3.providers.HttpProvider(
+									`http://${this.options.rpcaddr}:${this.options.rpcport}`));
+			}
+
+
+
+			child.on('close', (code) => {
+				delete this.pid;
+			});
+
+			child.on('error', (err) => {
+				console.log(`error running geth process`);
+				delete this.pid;
+			});
+
+
+			child.unref();
+
+			// wait for the ipc endpoint to open
+			if (!this.options.ipcdisable) {
+				setTimeout(() => {
+					this.ipc.setProvider(new Web3.providers.IpcProvider(
+										this.options.ipcpath, new net.Socket()));
+					this.ipc._extend({
+								property: 'miner',
+								methods: [
+									new this.ipc._extend.Method({
+										name: 'start',
+										call: 'miner_start',
+										params: 1,
+										inputFormatter: [parseInt]
+									}),
+									new this.ipc._extend.Method({
+										name: 'stop',
+										call: 'miner_stop',
+										params: 1,
+										inputFormatter: [parseInt]
+									})
+								]
+					});
+
+					this.ipc._extend({
+						property: 'admin',
+						methods: [
+							new this.ipc._extend.Method({
+								name: 'addPeer',
+								call: 'admin_addPeer',
+								params: 1,
+								outputFormatter: (val) => {return String(val)}
+							}),
+							new this.ipc._extend.Method({
+								name: 'nodeInfo',
+								call: 'admin_nodeInfo',
+								params: 0
+							}),
+							new this.ipc._extend.Method({
+								name: 'peers',
+								call: 'admin_peers',
+								params: 0
+							})
+						]
+					})
+
+					this.ipc._extend({
+						property: 'personal',
+						methods: [
+							new this.ipc._extend.Method({
+								name: 'listAccounts',
+								call: 'personal_listAccounts',
+								params: 0
+							}),
+							new this.ipc._extend.Method({
+								name: 'newAccount',
+								call: 'personal_newAccount',
+								params: 1
+							}),
+							new this.ipc._extend.Method({
+								name: 'unlockAccount',
+								call: 'personal_unlockAccount',
+								params: 3,
+								inputFormatter: [null,null,parseInt]
+							})
+						]
+					})
+
+					this.ipc._extend({
+						property: 'txpool',
+						methods: [
+							new this.ipc._extend.Method({
+								name: 'content',
+								call: 'txpool_content',
+								params: 0
+							}),
+							new this.ipc._extend.Method({
+								name: 'status',
+								call: 'txpool_status',
+								params: 0
+							})
+						]
+					});
+					this.ipc.admin.nodeInfo((err, data) => {
+						if (!err) {
+							this.enode = data.enode;
+						}
+					})
+
+					this.accounts = function (i) {
+						var accounts = this.rpc.eth.accounts;
+						if (typeof i === 'undefined')
+							return accounts;
+						else
+							return accounts[i];
+					}
+
+
+					this.txpool = function () {
+						var result = {};
+						return new Promise((resolve, reject) => {
+							this.ipc.txpool.status((err, data) => {
+								if (err) reject(err);
+								else {
+									result.status = data;
+									this.ipc.txpool.content((err, data) => {
+										if (err) reject(err)
+										else {
+											result.content = data || err;
+											resolve(result);
+										}
+									});
+								}
+							})
+						})
+					}
+
+					this.connect = function (enode) {
+						return new Promise ((resolve, reject) => {
+							this.ipc.admin.addPeer(enode, (err, result) => {
+										if (err) reject (err);
+										else resolve(result);
+							})
+						})
+					}
+
+					 this.peers = function () {
+						return new Promise ((resolve, reject) => {
+							this.ipc.admin.peers((err, data) => {
+								if (err) reject(err);
+								else resolve(data);
+							})
+						})
+					}
+
+					this.newAccount = function  (pass) {
+						return new Promise ((resolve, reject) => {
+							this.ipc.personal.newAccount(pass, (err, address) => {
+								if (err) reject(err);
+								else resolve(address);
+							})
+						})
+					}
+					
+					this.unlockAccount = function (address, pass, duration) {
+						return new Promise((resolve, reject) => {
+							this.ipc.personal.unlockAccount (address, pass, duration, (err, result) => {
+								if (!err) resolve(result);
+								else reject(err);
+							});
+						})
+					}
+
+					this.startMiner = function (n) {
+						var n = n || 8;
+						return new Promise ((resolve, reject) => {
+							this.ipc.miner.start(n, (err, result) => {
+								if (err) reject(err);
+								else resolve(result);
+							})
+						})
+					}
+
+					this.stopMiner = function (n) {
+						var n = n || 8;
+						return new Promise ((resolve, reject) => {
+							this.ipc.miner.stop(n, (err, result) => {
+								if (err) reject(err);
+								else resolve(result);
+							})
+						})
+					}
+
+
+					this.mine = function (txHash) {
+						var geth = this;
+						return new Promise ((resolve, reject) => {						
+							if (!geth.rpc.eth.mining)
+								geth.startMiner();
+							var filter = geth.rpc.eth.filter('latest');
+							filter.watch(function (err, block) {
+								if (!err) {
+									if (typeof block !== 'null') {
+										var block = geth.rpc.eth.getBlock('latest');
+										var receipt = geth.rpc.eth.getTransactionReceipt(txHash);
+										if (typeof receipt !== 'undefined') {
+											geth.txpool().then((result) => {
+												if (result.status.pending === '0x0' &&
+													result.status.queued === '0x0') {
+													filter.stopWatching();
+													geth.stopMiner();
+												}
+												resolve(receipt);
+											})
+										}
+									}
+								}
+							})
+						})
+					}
+				}, 3000);
+			}
 	}
 
-}
-
-/**
-  * Creates a new geth instance with the supplied options.
-  */
-Geth.new = function (options) {
-	var geth = typeof options === 'undefined' ? 
-				new Geth() : new Geth(options); 
-	Geth.nodes.push(geth);
-}
 
 
 
-/**
-  *  Starts a child geth process. If RPC or IPC API's are
-  *  exposed, the instance's `rpc` and `ipc` properties 
-  *  provide access to the corresponding Web3 objects.
-  *
-  */
-Geth.prototype.start = function () {
 
-	// prepare command-line arguments
-	var spawnargs = parseOpts(this.options);
-
-
-	// spawn the child process
-	var child =	cp.spawn('geth', spawnargs);
-
-	// inspect the logs
-	child.stderr.on('data', function (data) {
-		// extract the enode id
-		if (data.match(/enode/)) {
-			this.options.enode = 'enode' + data.split('enode')[1]
-							   				   .replace('\n', '');
-		} 
-		// set the rpc provider if an HTTP endpoint is found
-		else if (data.match(/HTTP/)) {
-			var host = `http://${this.options.rpcaddr}:${this.options.rpcport}`;
-			var rpcProvider = new Web3.providers.HttpProvider(host);
-			this.rpc.setProvider(rpcProvider);
+	this.stop = function () {
+		var pid = this.pid;
+		if (typeof pid === 'undefined') {
+			console.log('error: geth instance is not running')
+		} else {
+			ps.kill(pid, function (err, result) {
+				if (!err) {
+					console.log("Stopped geth instance", pid);
+				} else {	
+					console.log(err);
+				}
+			})		
 		}
-		// set the ipc provider if an IPC endpoint is found
-		else if (data.match(/IPC/)) {
-			var host = this.options.ipcpath;
-			var socket = new net.Socket();
-			var ipcProvider = new Web3.providers.IpcProvider(host, socket);
-			this.ipc.setProvider(ipcProvider);
-		}
+	}
+	
+	this.init = function (genesis) {
+		if (typeof genesis === 'string') 
+			genesis = Genesis[genesis];
 
-		// write the data to the log file
-		fs.appendFileSync(path.join(this.options.datadir,'geth.log'), data);
+		fs.writeFileSync('/tmp/genesis.json',
+						JSON.stringify(genesis, 2, null));
 
-		this.state = 'running';
-	});
+		var result = cp.execSync(`geth --datadir ${this.options.datadir} init /tmp/genesis.json`)
+					   .toString('utf-8');
 
-	/** Executed when the underlying geth process is terminated */
-	child.on('exit', (code) => {
-		delete this.options.enode;
-		delete this.stop;
-		this.state = 'terminated';
-	});
-
-	/** Executed when the underlying geth process throws and error */
-	child.on('err', (err) => {
-		console.log(`error: ${err}`);
-	});
-}
-
-Geth.prototype.init = function (genesis) {
-	if (typeof genesis === 'string') 
-		genesis = Genesis[genesis];
-
-	fs.writeFileSync('/tmp/genesis.json', JSON.stringify(genesis, 2, null));
-		var result = cp.execSync('geth --datadir ' + this.options.datadir +
-							     ' init /tmp/genesis.json').toString('utf-8');			
-    console.log(result);
+	    console.log(result);
+	}
 }
 
 
@@ -143,33 +290,6 @@ Geth.prototype.ipc = new Web3();
 Geth.prototype.rpc = new Web3();
 
 
-
-
-Geth.prototype.stop = function () {
-	ps.kill(this.pid, function (err, result) {
-		if (!err) {
-			console.log("Stopped geth instance", geth.pid);
-		} else {	
-			console.log(err);
-		}
-	})
-}
-
-
-
-
-
-
-
-
-listNodes().then((nodes) => {
-	nodes.forEach((node) => {
-		node.rpc.setProvider(new Web3.providers.HttpProvider('http://' + node.options.rpcaddr + ':' + node.options.rpcport));
-		node.ipc.setProvider(new Web3.providers.IpcProvider(node.options.ipcpath, new net.Socket()));
-		extend(node);
-	})
-	Geth.nodes = nodes;
-});
 
 function parseOpts (options) {
 	var args = [];
@@ -193,133 +313,4 @@ function parseOpts (options) {
 		args.push(value);
 	}
 	return args;
-}
-
-
-
-
-
-function listNodes () {
-	return new Promise((resolve, reject) => {
-		ps.lookup("geth", function (err, result) { 
-			if(!err) {
-				var results = result.filter((item)=>{return item.command === "geth"});
-				for (var i = 0 ; i < results.length; i++) {
-					var item = results[i];
-					var argv = item.arguments;
-					delete item.arguments;
-					item.client = item.command;
-					delete item.command;
-					item.options = {};
-					for (var j = 0 ; j < argv.length; j++) {
-						if (argv[j].startsWith('--')) {
-							var arg = argv[j].replace('--', '');
-							item.options[arg] = 
-								j+1 < argv.length && !argv[j+1].startsWith('--') ?
-									item.options[arg] = argv[j+1] :
-									item.options[arg] = true;
-						}
-					}
-					if (item.options.rpc) {
-						item.options.rpcport = item.options.rpcport || 8545;
-						item.options.rpcaddr = item.options.rpcaddr || 'localhost'
-						item.options.rpcpapi = item.options.rpcapi|| 'web3,eth,net'
-						item.options.rpcapi = item.options.rpcapi.split(',');
-					}
-					if (!item.options.port)
-						item.options.port = 30303;
-					if (!item.options.datadir)
-						item.options.datadir = path.join(process.env.HOME, '.ethereum')
-					if (!item.options.ipcdisable) {
-						item.options.ipcpath = item.options.ipcpath || path.join(item.options.datadir, 'geth.ipc')
-					}
-					if (item.options.bootnodes)
-						item.options.bootnodes = item.options.bootnodes.split(',');
-					results[i] = new Geth(item.options);
-					results[i].pid = item.pid;
-					results[i].state = 'running';
-					if (!results[i].options.ipcdisable)
-						extend(results[i]);
-				}
-				resolve(results);
-			} else {
-				reject(err);
-				console.log("Error listing active geth nodes");
-			}
-		});
-		
-	})
-}
-
-function extend(geth) {
-	geth.ipc._extend({
-				property: 'miner',
-				methods: [
-					new geth.ipc._extend.Method({
-						name: 'start',
-						call: 'miner_start',
-						params: 1,
-						inputFormatter: [parseInt],
-						outputFormatter: (val) => {return String(val)}
-					}),
-					new geth.ipc._extend.Method({
-						name: 'stop',
-						call: 'miner_stop',
-						params: 1,
-						inputFormatter: [parseInt],
-						outputFormatter: (val) => {return String(val)}
-					})
-				]
-			});
-			geth.miner = {
-				start: function (n) {
-					n = n || 8;
-					geth.ipc.miner.start(function (err, result) {
-						if (!err) {
-							console.log(result);
-						} else {
-							console.log(err);
-						}
-					})
-				},
-				stop: function () {
-					geth.ipc.miner.stop(function (err, result) {
-						if (!err) {
-							console.log(result);
-						} else {
-							console.log(err);
-						}
-					})
-				},
-				mine: function (txHash) {
-					return new Promise ((resolve, reject) => {
-						geth.ipc.miner.start(8, function (err, result) {
-							if (err) reject(err);
-							else {
-								var filter = geth.rpc.eth.filter('latest');
-								filter.watch(function (err, block) {
-									if (err) {
-										filter.stopWatching();
-										reject(err);
-									} else {
-										var block = geth.rpc.eth.getTransactionReceipt(txHash,
-											function (err, result) {
-												if (!err) {
-													if (result.blockNumber) {
-														geth.ipc.miner.stop((err, result)=>{
-															if (!err) console.log(result);
-															else console.log(err);
-														})
-														filter.stopWatching();
-														resolve(result);
-													}
-												}
-											})
-									}
-								})
-							}
-						})
-					})
-				}
-			}
 }
