@@ -10,6 +10,7 @@ const defaults  = require('./config/options');
 const Genesis   = require('./config/genesis');
 
 
+
 function Geth (options) {
 	this.options = options || {};
 	for (var type in defaults) {
@@ -21,69 +22,68 @@ function Geth (options) {
 	if (!fs.existsSync(this.options.datadir))
 		fs.mkdir(this.options.datadir);
 
-	this.start = function () {start(this)};
-	this.onBlock = null;
-
+	this.start = function () {return start(this)};
 }
 
 
 
 function start (geth) {
+	return new Promise ((resolve, reject) => {
+		var spawnargs = parseOpts(geth.options);
+		var out = fs.openSync(geth.options.datadir + '/geth.log', 'a');
+		var child = cp.spawn('geth', spawnargs, {
+			detached: true,
+			stdio: [ 'inherit', out, out ]
+		});
 
-	var spawnargs = parseOpts(geth.options);
-	var out = fs.openSync(geth.options.datadir + '/geth.log', 'a');
-	var child = cp.spawn('geth', spawnargs, {
-		detached: true,
-		stdio: [ 'inherit', out, out ]
-	});
+		geth.pid = child.pid;
 
-	geth.pid = child.pid;
+		setTimeout(function () {
+			if (geth.options.rpc) {
+				var host = `http://${geth.options.rpcaddr}:${geth.options.rpcport}`
+				geth.rpc = Web3Mgr.create('rpc', host);
+			}
+			
 
-	if (geth.options.rpc) {
-		var host = `http://${geth.options.rpcaddr}:${geth.options.rpcport}`
-		geth.rpc = Web3Mgr.create('rpc', host);
-		if (geth.onBlock) geth.rpc.eth.filter('latest').watch(geth.onBlock)
-	}
-
-	// wait for the ipc endpoint to open
-	if (!geth.options.ipcdisable) {
-		var host = geth.options.ipcpath || path.join(geth.options.datadir, 'geth.ipc');
-			setTimeout(function () {
+			// wait for the ipc endpoint to open
+			if (!geth.options.ipcdisable) {
+				var host = geth.options.ipcpath || path.join(geth.options.datadir, 'geth.ipc');
 				geth.ipc = Web3Mgr.create('ipc', host);
-			}, 5000);
+			}
+
+			resolve(geth);
+		}, 3*1000);
+
+
+		child.on('close', function (code) {
+			delete geth.pid;
+		});
+
+
+
+		child.unref();
+
+		geth.stop = function () {
+			var pid = geth.pid;
+			if (typeof pid === 'undefined') {
+				console.log('error: geth instance is not running')
+			} else {
+				ps.kill(pid, function (err, result) {
+					if (!err) {
+						console.log("Stopped geth instance", pid);
+					} else {	
+						console.log(err);
+					}
+				})		
+			}
 		}
-
-	child.on('close', function (code) {
-		delete geth.pid;
-	});
-
-
-
-	child.unref();
-
-	geth.stop = function () {
-		var pid = geth.pid;
-		if (typeof pid === 'undefined') {
-			console.log('error: geth instance is not running')
-		} else {
-			ps.kill(pid, function (err, result) {
-				if (!err) {
-					console.log("Stopped geth instance", pid);
-				} else {	
-					console.log(err);
-				}
-			})		
-		}
-	}
-
-
-	return geth;
+	})
 }
 
 
 
 	
-Geth.init = function (genesis) {
+Geth.prototype.init = function (genesis) {
 	if (typeof genesis === 'string') 
 		genesis = Genesis[genesis];
 
