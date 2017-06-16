@@ -1,7 +1,7 @@
 {
   "name": "geth-js",
-  "version": "0.0.7",
-  "description": "Simple wrapper geth",
+  "version": "0.0.8",
+  "description": "Simple wrapper for geth",
   "main": "index.js",
   "scripts": {
     "test": "mocha"
@@ -23,6 +23,6 @@
   "homepage": "https://github.com/kidwai/geth-js#readme",
   "dependencies": {
     "ps-node": "^0.1.6",
-    "web3": "^0.18.4"
+    "web3-manager": "0.0.0"
   }
 }

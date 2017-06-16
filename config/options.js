@@ -7,7 +7,7 @@ module.exports = {
 		},
 		keystore: {
 			description: 'Directory for the keystore',
-			value: path.join(process.env.HOME, '.ethereum', 'keystore')
+			value: null
 		},
 		nousb: {
 			description: 'Disables monitoring for and managine USB hardware wallets',
@@ -139,7 +139,7 @@ module.exports = {
 	  },
 	  ipcpath:              {
 	      description: 'Filename for IPC socket/pipe within the datadir (explicit paths escape it)',
-	      value: path.join(process.env.HOME, '.ethereum', 'geth.ipc')
+	      value: null
 	  },
 	  rpccorsdomain:   {
 	      description: 'List of domains from which to accept cross origin requests (browser enforced)',
